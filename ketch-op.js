@@ -1,110 +1,117 @@
-// ketch‑observepoint-export/ketch‑op.js
-// 📥 Loads Ketch export logic, then prompts for OP API key to Export/Import/Update.
+// ketch‑op.js
 (async function(){
   console.log('ketch-op.js loaded');
 
-  // 1) Pull Ketch consent config & build our data.categories, cookieRows, tagRows
-  const u = performance.getEntriesByType('resource')
+  //
+  // 1) KETCH EXPORTER (exactly your original bookmarklet logic)
+  //
+  const u = performance.getEntriesByType("resource")
     .map(r=>r.name)
     .find(n=>/\/config\/.*\/config\.json/.test(n));
-  if(!u) {
-    alert('⚠️ Open & save the Ketch consent modal first');
-    return;
-  }
+  if(!u) return alert("⚠️ Open & save the Ketch consent modal first");
+
   const [cfg, db] = await Promise.all([
     fetch(u).then(r=>r.json()),
-    fetch('https://cdn.jsdelivr.net/gh/jkwakman/Open-Cookie-Database@master/open-cookie-database.json')
+    fetch("https://cdn.jsdelivr.net/gh/jkwakman/Open-Cookie-Database@master/open-cookie-database.json")
       .then(r=>r.json())
   ]);
-  const flat = Object.values(db).flat();
-  const hostname = location.hostname.replace(/^www\./,'');
 
-  // build cookieRows: [ Consent Category, Cookie Name, Cookie Domain, Vendor ]
+  const flat = Object.values(db).flat();
+  const h = location.hostname.replace(/^www\./,"");
+
+  // build cookieRows
   const cookieRows = (cfg.purposes||cfg.categories||[]).flatMap(cat=>{
-    const catName = cat.title||cat.name||'';
+    const catName = cat.title||cat.name||"";
     return (cat.cookies||[]).map(c=>{
-      const name   = c.name||c.code||c.ID||'';
-      const vendor = c.serviceProvider||'';
-      const raw    = (flat.find(d=>d.cookie===name || (d.wildcardMatch==='1' && name.indexOf(d.cookie)===0))||{}).domain||'';
+      const name   = c.name||c.code||c.ID||"";
+      const vendor = c.serviceProvider||"";
+      const raw    = (flat.find(d=>d.cookie===name||(d.wildcardMatch==="1"&&name.indexOf(d.cookie)===0))||{}).domain||"";
       const m      = raw.match(/([a-z0-9\.-]+\.[a-z]{2,})(?=(?:\s|\(|$))/i);
-      const domain = vendor
-        ? (m ? m[1] : '')
-        : hostname;
-      return [catName, name, domain, vendor];
+      const dom    = vendor
+        ? (m? m[1] : "")
+        : h;
+      return [catName, name, dom, vendor];
     });
   });
 
-  // build tagRows: [ Consent Category, Tag Name ]
+  // build tagRows
   const tagMap = new Map();
   (cfg.purposes||cfg.categories||[]).forEach(cat=>{
-    const catName = cat.title||cat.name||'';
+    const catName = cat.title||cat.name||"";
     (cat.cookies||[]).forEach(c=>{
-      const vendor = c.serviceProvider||'';
-      if(vendor) tagMap.set(catName + '‖' + vendor, [catName, vendor]);
+      const vendor = c.serviceProvider||"";
+      if(vendor) tagMap.set(catName+"‖"+vendor, [catName, vendor]);
     });
   });
   const tagRows = Array.from(tagMap.values());
 
-  // derive categories array for import/update flows
-  const categories = Array.from(new Set(cookieRows.map(r=>r[0]))).map(catName=>({
-    name: catName,
+  // build categories array for import/update
+  const categories = Array.from(
+    new Set(cookieRows.map(r=>r[0]))
+  ).map(catName=>({
+    name:    catName,
     cookies: cookieRows.filter(r=>r[0]===catName),
     tags:    tagRows.filter(r=>r[0]===catName)
   }));
 
-  // helper to download the two CSVs (Export-only mode)
+  // CSV download helper
   function downloadCSVs(){
-    function dl(rows, filename, headers){
+    function dl(rows, fn, headers){
       const csv = [headers, ...rows]
-        .map(row => row.map(f=> `"${(f||'').toString().replace(/"/g,'""')}"`).join(','))
-        .join('\r\n');
-      const blob = new Blob([csv], { type:'text/csv' });
-      const a    = document.createElement('a');
-      a.href     = URL.createObjectURL(blob);
-      a.download = filename;
+        .map(r=>r.map(f=>"\""+(f||"")+"\"").join(","))
+        .join("\r\n");
+      const b = new Blob([csv], { type:"text/csv" });
+      const a = document.createElement("a");
+      a.href        = URL.createObjectURL(b);
+      a.download    = fn;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
     }
-    dl(cookieRows, `ketch_cookies_${hostname}.csv`,
-       ['Consent Category','Cookie Name','Cookie Domain','Vendor']);
-    dl(tagRows,    `ketch_tags_${hostname}.csv`,
-       ['Consent Category','Tag Name']);
+    dl(cookieRows, `ketch_cookies_${h}.csv`,
+       ["Consent Category","Cookie Name","Cookie Domain","Vendor"]);
+    dl(tagRows,    `ketch_tags_${h}.csv`,
+       ["Consent Category","Tag Name"]);
   }
 
-  // Our collected data
-  const data = { categories, cookieRows, tagRows, domain: hostname };
+  const data = { categories, cookieRows, tagRows, domain: h };
 
-  // 2) Prompt for ObservePoint API key
+  //
+  // 2) PROMPT FOR OBSERVEPOINT API KEY
+  //
   const apiKey = prompt('Enter ObservePoint API Key (leave blank to Export only):');
-  if(!apiKey) {
+  if(!apiKey){
     return downloadCSVs();
   }
 
-  // 3) Prompt: Import vs Update
+  //
+  // 3) IMPORT vs UPDATE
+  //
   const action = prompt('Choose action: Import or Update').toLowerCase();
-  if(!['import','update'].includes(action)) {
+  if(!['import','update'].includes(action)){
     return alert('Invalid action – must be Import or Update');
   }
 
-  // 4) Helper to call ObservePoint API
+  // OP API helper
   const opFetch = (url, opts={}) =>
     fetch(url, {
       ...opts,
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Accept':        'application/json',
-        ...(opts.body ? { 'Content-Type': 'application/json' } : {})
+        ...(opts.body? { 'Content-Type':'application/json' } : {})
       }
     }).then(r=>r.json());
 
-  if(action === 'import') {
-    // --- IMPORT FLOW ---
+  if(action === 'import'){
+    //
+    // 4a) IMPORT FLOW
+    //
     const doTags    = confirm('Include tags?');
     const doCookies = confirm('Include cookies?');
 
-    for(const cat of data.categories) {
-      // 1) Create new category
+    for(const cat of data.categories){
+      // create category
       const created = await opFetch(
         'https://app.observepoint.com/api/v3/consent-categories',
         {
@@ -119,8 +126,8 @@
       );
       const id = created.id;
 
-      // 2) Patch cookies
-      if(doCookies && cat.cookies.length) {
+      // patch cookies
+      if(doCookies && cat.cookies.length){
         const ops = cat.cookies.map((c,i)=>({
           op:   'add',
           path: `/${i}`,
@@ -137,14 +144,12 @@
         );
       }
 
-      // 3) Patch tags
-      if(doTags && cat.tags.length) {
-        // NOTE: OP expects numeric tagId. You’ll need to map vendor names (cat.tags[i][1])
-        // to real tagId values. For now we pass them as-is.
+      // patch tags
+      if(doTags && cat.tags.length){
         const ops = cat.tags.map((t,i)=>({
           op:   'add',
           path: `/${i}`,
-          value: { tagId: t[1], accounts: [] }
+          value:{ tagId: t[1], accounts: [] }
         }));
         await opFetch(
           `https://app.observepoint.com/api/v3/consent-categories/${id}/tags`,
@@ -156,67 +161,83 @@
     alert('Import complete!');
 
   } else {
-    // --- UPDATE FLOW ---
-    // 1) Fetch existing library
+    //
+    // 4b) UPDATE FLOW
+    //
+    // fetch library
     const lib = await opFetch(
       'https://app.observepoint.com/api/v3/consent-categories/library?page=0&pageSize=100&sortBy=updated_at&sortDesc=true'
     );
-    // 2) Ask user to pick matching existing names
+
+    // select existing names
     const names = data.categories.map(c=>c.name).join(', ');
     const pick  = prompt(
       `Found ${data.categories.length} categories on the site: [${names}]\n`+
       'Enter the SAME N existing category names (comma‑separated) to update:'
     );
-    const selectedNames = pick.split(',').map(n=>n.trim());
-    if(selectedNames.length !== data.categories.length) {
+    const selected = pick.split(',').map(n=>n.trim());
+    if(selected.length !== data.categories.length){
       return alert(`You must select exactly ${data.categories.length} names.`);
     }
 
-    // 3) Loop & sync each
+    // loop & sync
     for(let i=0; i<data.categories.length; i++){
-      const newCat  = data.categories[i];
-      const existing = lib.consentCategories.find(ec=>
-        selectedNames[i] && ec.name.includes(selectedNames[i])
+      const newCat = data.categories[i];
+      const ec     = lib.consentCategories.find(x=>
+        selected[i] && x.name.includes(selected[i])
       );
-      if(!existing) {
-        alert(`Could not match "${selectedNames[i]}"`); 
+      if(!ec){
+        alert(`Could not match "${selected[i]}"`);
         return;
       }
-      const id = existing.id;
+      const id = ec.id;
 
-      // a) Remove old cookies
-      const oldCookies = await opFetch(
+      // remove old cookies
+      const oldC = await opFetch(
         `https://app.observepoint.com/api/v3/consent-categories/${id}/cookies`
       );
-      const remOps = oldCookies.cookies.map((_,idx)=>({
-        op:'remove', path:'/0'
-      }));
-      if(remOps.length){
+      const remC = oldC.cookies.map((_,j)=>({ op:'remove', path:'/0' }));
+      if(remC.length){
         await opFetch(
           `https://app.observepoint.com/api/v3/consent-categories/${id}/cookies`,
-          { method:'PATCH', body: JSON.stringify(remOps) }
+          { method:'PATCH', body: JSON.stringify(remC) }
         );
       }
-      // b) Add new cookies
-      const addOps = newCat.cookies.map((c,j)=>({
-        op:'add',
-        path:`/${j}`,
-        value:{
-          nameType:   'name_exact_match',
-          name:       c[1],
-          domainType: 'domain_exact_match',
-          domain:     c[2]
+      // add new cookies
+      const addC = newCat.cookies.map((c,j)=>({
+        op:'add', path:`/${j}`, value:{
+          nameType:'name_exact_match', name:c[1],
+          domainType:'domain_exact_match', domain:c[2]
         }
       }));
-      if(addOps.length){
+      if(addC.length){
         await opFetch(
           `https://app.observepoint.com/api/v3/consent-categories/${id}/cookies`,
-          { method:'PATCH', body: JSON.stringify(addOps) }
+          { method:'PATCH', body: JSON.stringify(addC) }
         );
       }
 
-      // c) Tags sync (similar remove+add if desired)
-      // …you can mirror the cookie logic here…
+      // remove old tags
+      const oldT = await opFetch(
+        `https://app.observepoint.com/api/v3/consent-categories/${id}/tags`
+      );
+      const remT = oldT.tags.map((_,j)=>({ op:'remove', path:'/0' }));
+      if(remT.length){
+        await opFetch(
+          `https://app.observepoint.com/api/v3/consent-categories/${id}/tags`,
+          { method:'PATCH', body: JSON.stringify(remT) }
+        );
+      }
+      // add new tags
+      const addT = newCat.tags.map((t,j)=>({
+        op:'add', path:`/${j}`, value:{ tagId:t[1], accounts: [] }
+      }));
+      if(addT.length){
+        await opFetch(
+          `https://app.observepoint.com/api/v3/consent-categories/${id}/tags`,
+          { method:'PATCH', body: JSON.stringify(addT) }
+        );
+      }
     }
 
     alert('Update complete!');
